@@ -1,0 +1,16 @@
+# Core data processing
+pandas>=2.1
+numpy>=1.26
+
+# Excel support
+openpyxl>=3.1
+
+# Config handling
+pyyaml>=6.0
+
+# UI (manual approval)
+streamlit>=1.31
+
+# PDF & image rendering (used later)
+reportlab>=4.0
+pillow>=10.0
