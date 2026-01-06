@@ -1,0 +1,27 @@
+﻿__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.DS_Store
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+
+# Data & outputs (generated)
+data/raw/*
+data/processed/*
+outputs/*
+photos/*
+
+# Master data (do not version binary state)
+master/*.parquet
+master/*.db
+
+# Keep config files versioned
+!config/*.yaml
+!config/*.yml
+!config/*.csv
