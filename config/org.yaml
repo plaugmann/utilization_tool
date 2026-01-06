@@ -1,0 +1,24 @@
+business_units:
+  Denmark:
+    ssls:
+
+      BC:
+        display_name: "Business Consulting"
+        email_list: "bc_denmark@firma.dk"
+        competency_areas:
+          - "BC - Business Transformation Architecture (ADV040)"
+
+      RC:
+        display_name: "Risk Consulting"
+        email_list: "rc_denmark@firma.dk"
+        competency_areas:
+          - "Risk - Actuarial (ADV005)"
+          - "RISK - FSRM (ADV006)"
+
+      TC:
+        display_name: "Technology Consulting"
+        email_list: "tc_denmark@firma.dk"
+        competency_areas:
+          - "TC - AI & Data (ADV015)"
+          - "TC - Cyber Security (ADV003)"
+          - "TC - Platforms (ADV011)"
