@@ -1,16 +1,7 @@
-# Hello World Python App
+# Utilization Tool
 
-Simple minimal Python app that provides a `greet()` function and a small CLI.
-
-Run the app:
-
-```bash
-python hello.py
-python hello.py Alice
-```
-
-Run tests:
-
-```bash
-python -m unittest -v
-```
+Automated weekly utilization reporting with:
+- PowerBI export ingestion
+- Data quality checks + manual approval (Streamlit)
+- Master roster management
+- Excel + PDF outputs with employee photos
