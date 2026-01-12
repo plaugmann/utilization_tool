@@ -3,6 +3,10 @@ from pathlib import Path
 from datetime import datetime
 import streamlit as st
 import pandas as pd
+import io
+import urllib.request
+from PIL import Image
+from streamlit_cropper import st_cropper
 
 # -------------------------------------------------
 # Ensure repo root is on PYTHONPATH so "src" can be imported
@@ -11,7 +15,7 @@ BASE = Path(__file__).resolve().parents[1]
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from src.etl import run_etl  # noqa: E402
+from src.etl import run_etl, load_org_config  # noqa: E402
 
 # -------------------------------------------------
 # Paths
@@ -19,6 +23,9 @@ from src.etl import run_etl  # noqa: E402
 MASTER_PATH = BASE / "master" / "roster.csv"
 AUDIT_PATH = BASE / "master" / "audit_log.csv"
 PHOTOS_DIR = BASE / "photos"
+DEFAULT_PHOTO = PHOTOS_DIR / "default.jpg"
+DEFAULT_PHOTO_SIZE = 400
+CONFIG_PATH = BASE / "config"
 
 # -------------------------------------------------
 # Streamlit setup
@@ -42,6 +49,17 @@ MASTER_COLUMNS = [
     "on_leave",
     "active",
     "notes",
+]
+
+RANK_OPTIONS = [
+    "Partner",
+    "Associate Partner",
+    "Director",
+    "Senior Manager",
+    "Manager",
+    "Senior Consultant",
+    "Consultant",
+    "Junior Consultant",
 ]
 
 AUDIT_COLUMNS = [
@@ -101,6 +119,16 @@ def log_action(user: str, week: str, action: str, gpn: str, field: str, old, new
     }])
     entry.to_csv(AUDIT_PATH, mode="a", header=False, index=False)
 
+def ensure_default_photo() -> None:
+    PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+    if DEFAULT_PHOTO.exists():
+        return
+    # Simple neutral placeholder
+    img = Image.new("RGB", (DEFAULT_PHOTO_SIZE, DEFAULT_PHOTO_SIZE), color=(230, 230, 230))
+    img.save(DEFAULT_PHOTO, format="JPEG", quality=90)
+
+
+
 # -------------------------------------------------
 # Sidebar controls
 # -------------------------------------------------
@@ -124,6 +152,7 @@ if not uploaded:
 
 # Run ETL
 raw, totals = run_etl(uploaded)
+org_cfg = load_org_config()
 
 # Defensive: ensure required columns exist
 if "rank_bucket" not in raw.columns:
@@ -191,17 +220,35 @@ else:
                 active = st.checkbox("Active", value=True, key=f"active_{gpn}")
                 on_leave = st.checkbox("On leave", value=False, key=f"ol_{gpn}")
             with c2:
-                st.write(f"BU: **{bu}**")
-                st.write(f"SSL: **{ssl}**")
-                st.write(f"Rank: **{rank_bucket}**")
+                bu_options = list(org_cfg.get("business_units", {}).keys())
+                if bu and bu not in bu_options:
+                    bu_options = [bu] + bu_options
+                if not bu_options:
+                    bu_options = [bu or "Unknown"]
+                bu_idx = bu_options.index(bu) if bu in bu_options else 0
+                selected_bu = st.selectbox("BU", options=bu_options, index=bu_idx, key=f"bu_{gpn}")
+
+                ssl_options = list(org_cfg.get("business_units", {}).get(selected_bu, {}).get("ssls", {}).keys())
+                if ssl and ssl not in ssl_options:
+                    ssl_options = [ssl] + ssl_options
+                if not ssl_options:
+                    ssl_options = [ssl or ""]
+                ssl_idx = ssl_options.index(ssl) if ssl in ssl_options else 0
+                selected_ssl = st.selectbox("SSL", options=ssl_options, index=ssl_idx, key=f"ssl_{gpn}")
+
+                rank_options = list(RANK_OPTIONS)
+                if rank_bucket and rank_bucket not in rank_options:
+                    rank_options = [rank_bucket] + rank_options
+                rank_idx = rank_options.index(rank_bucket) if rank_bucket in rank_options else 0
+                selected_rank = st.selectbox("Rank", options=rank_options, index=rank_idx, key=f"rank_{gpn}")
 
             if st.button("Add to master", key=f"add_{gpn}"):
                 new_row = pd.DataFrame([{
                     "gpn": gpn,
                     "display_name": display_name,
-                    "bu": bu,
-                    "ssl": ssl,
-                    "rank_bucket": rank_bucket,
+                    "bu": selected_bu,
+                    "ssl": selected_ssl,
+                    "rank_bucket": selected_rank,
                     "on_leave": str(on_leave),
                     "active": str(active),
                     "notes": notes,
@@ -211,6 +258,46 @@ else:
                 log_action(user, week, "ADD", gpn, "ALL", "", "added", comment="Added from PowerBI export")
                 st.success("Added to master roster. Reload page to see QC update.")
                 st.stop()
+
+    if st.button("Add all new employees to master"):
+        new_rows = []
+        for _, row in new_df.iterrows():
+            gpn = row["GPN"]
+            if gpn in master["gpn"].astype(str).values:
+                continue
+            name = row.get("display_name_auto", row.get("Employee Name", ""))
+            bu = row.get("BU", "Denmark")
+            ssl = row.get("SSL", "")
+            rank_bucket = row.get("rank_bucket", "")
+
+            display_name = st.session_state.get(f"dn_{gpn}", name)
+            selected_bu = st.session_state.get(f"bu_{gpn}", bu)
+            selected_ssl = st.session_state.get(f"ssl_{gpn}", ssl)
+            selected_rank = st.session_state.get(f"rank_{gpn}", rank_bucket)
+            notes = st.session_state.get(f"notes_{gpn}", "")
+            active = st.session_state.get(f"active_{gpn}", True)
+            on_leave = st.session_state.get(f"ol_{gpn}", False)
+
+            new_rows.append({
+                "gpn": gpn,
+                "display_name": display_name,
+                "bu": selected_bu,
+                "ssl": selected_ssl,
+                "rank_bucket": selected_rank,
+                "on_leave": str(on_leave),
+                "active": str(active),
+                "notes": notes,
+            })
+
+        if not new_rows:
+            st.info("No new employees to add.")
+        else:
+            master = pd.concat([master, pd.DataFrame(new_rows)], ignore_index=True)
+            save_master(master)
+            for row in new_rows:
+                log_action(user, week, "ADD", row["gpn"], "ALL", "", "added", comment="Added from PowerBI export (bulk)")
+            st.success(f"Added {len(new_rows)} new employees. Reload page to see QC update.")
+            st.stop()
 
 # Missing employees (assumed on leave)
 st.subheader("🚫 Missing employees (in master, not in PowerBI) → assumed On leave")
@@ -268,8 +355,9 @@ else:
                     st.success("Updated master SSL. Reload page to see QC update.")
                     st.stop()
 
-# Missing photos
-st.subheader("📸 Missing photos (master gpn without photos/<GPN>.jpg)")
+# Photos (upload + crop)
+st.subheader("?? Photos (upload + crop)")
+ensure_default_photo()
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
 if len(master) == 0:
@@ -280,14 +368,73 @@ else:
             return False
         return (PHOTOS_DIR / f"{gpn}.jpg").exists()
 
+    show_all_photos = st.checkbox("Show all employees (including existing photos)", value=False)
     photo_missing = master[~master["gpn"].apply(has_photo)].copy()
+    target = master.copy() if show_all_photos else photo_missing
 
-    if len(photo_missing) == 0:
+    if len(target) == 0:
         st.success("All master employees have photos.")
     else:
-        st.dataframe(photo_missing[["gpn", "display_name", "ssl", "rank_bucket", "on_leave", "active"]])
+        for _, row in target.sort_values(["ssl", "display_name"], na_position="last").iterrows():
+            gpn = row.get("gpn", "")
+            name = row.get("display_name", "")
+            photo_path = PHOTOS_DIR / f"{gpn}.jpg"
+            existing = photo_path if photo_path.exists() else DEFAULT_PHOTO
 
-        st.caption("Tip: Add photos as photos/<GPN>.jpg (JPG). A placeholder will be used in PDF if missing.")
+            with st.expander(f"{name} ({gpn})"):
+                c1, c2 = st.columns([1, 2])
+                with c1:
+                    st.image(str(existing), caption="Current", width=250)
+                with c2:
+                    photo_url = st.text_input(
+                        "LinkedIn image URL (direct)",
+                        value="",
+                        key=f"url_{gpn}",
+                        help="Paste a direct image URL. LinkedIn may block some URLs.",
+                    )
+                    uploaded_photo = st.file_uploader(
+                        "Or upload a profile photo (JPG/PNG)",
+                        type=["jpg", "jpeg", "png"],
+                        key=f"photo_{gpn}",
+                    )
+
+                    img = None
+                    if photo_url:
+                        try:
+                            req = urllib.request.Request(
+                                photo_url,
+                                headers={"User-Agent": "Mozilla/5.0"},
+                            )
+                            with urllib.request.urlopen(req, timeout=10) as resp:
+                                img = Image.open(io.BytesIO(resp.read()))
+                        except Exception:
+                            st.error("Could not load image from URL.")
+                    elif uploaded_photo is not None:
+                        img = Image.open(uploaded_photo)
+
+                    if img is not None:
+                        st.image(img, caption="Original", width=200)
+
+                        cropped_preview = st_cropper(
+                            img,
+                            realtime_update=True,
+                            box_color="#00A3FF",
+                            aspect_ratio=(1, 1),
+                        )
+
+                        if st.button("Save cropped photo", key=f"save_{gpn}"):
+                            if cropped_preview is None:
+                                st.error("Crop the image before saving.")
+                            else:
+                                cropped = cropped_preview.resize(
+                                    (DEFAULT_PHOTO_SIZE, DEFAULT_PHOTO_SIZE), Image.Resampling.LANCZOS
+                                )
+                                cropped.save(photo_path, format="JPEG", quality=90)
+                                log_action(user, week, "PHOTO", gpn, "photo", "", str(photo_path), comment="Uploaded/cropped photo")
+                                st.success("Saved photo. Reload page to see it in the list.")
+                                st.stop()
+
+        st.caption("Photos are saved as photos/<GPN>.jpg. Missing photos use a default placeholder.")
 
 st.markdown("---")
 st.subheader("🔎 Debug (optional)")
