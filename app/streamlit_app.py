@@ -170,7 +170,7 @@ missing_gpns = master_gpns - raw_gpns
 
 # New employees
 st.subheader("🆕 New employees (in PowerBI, not in master)")
-cols = ["GPN", "Employee Name", "BU", "SSL", "rank_bucket"]
+cols = ["GPN", "Employee Name", "display_name_auto", "BU", "SSL", "rank_bucket"]
 cols = [c for c in cols if c in raw.columns]
 new_df = raw[raw["GPN"].isin(new_gpns)][cols].sort_values(["SSL", "Employee Name"], na_position="last")
 
@@ -179,7 +179,7 @@ if len(new_df) == 0:
 else:
     for _, row in new_df.iterrows():
         gpn = row["GPN"]
-        name = row.get("Employee Name", "")
+        name = row.get("display_name_auto", row.get("Employee Name", ""))
         bu = row.get("BU", "Denmark")
         ssl = row.get("SSL", "")
         rank_bucket = row.get("rank_bucket", "")
@@ -249,7 +249,7 @@ else:
     else:
         for _, row in ssl_mismatch.iterrows():
             gpn = row["GPN"]
-            name = row.get("Employee Name", row.get("display_name", ""))
+            name = row.get("display_name_auto", row.get("Employee Name", row.get("display_name", "")))
             pbi_ssl = row.get("SSL", "")
             master_ssl = row.get("ssl", "")
             with st.expander(f"{name} ({gpn})"):
