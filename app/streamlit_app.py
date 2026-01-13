@@ -15,7 +15,8 @@ BASE = Path(__file__).resolve().parents[1]
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from src.etl import run_etl, load_org_config  # noqa: E402
+from src.etl import run_etl, load_org_config, get_output_dir  # noqa: E402
+from src.render_excel import build_ssl_dataset, build_ssl_summary, write_ssl_excel  # noqa: E402
 
 # -------------------------------------------------
 # Paths
@@ -23,7 +24,8 @@ from src.etl import run_etl, load_org_config  # noqa: E402
 MASTER_PATH = BASE / "master" / "roster.csv"
 AUDIT_PATH = BASE / "master" / "audit_log.csv"
 PHOTOS_DIR = BASE / "photos"
-DEFAULT_PHOTO = PHOTOS_DIR / "default.jpg"
+ASSETS_DIR = BASE / "assets"
+DEFAULT_PHOTO = ASSETS_DIR / "placeholder_profile_400.png"
 DEFAULT_PHOTO_SIZE = 400
 CONFIG_PATH = BASE / "config"
 
@@ -77,6 +79,16 @@ AUDIT_COLUMNS = [
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
+def normalize_bool_str(value: object) -> str:
+    if value is None:
+        return "False"
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "yes", "y", "t"}:
+        return "True"
+    if normalized in {"false", "0", "no", "n", "f"}:
+        return "False"
+    return "False"
+
 def load_master() -> pd.DataFrame:
     ensure_parent(MASTER_PATH)
     if MASTER_PATH.exists() and MASTER_PATH.stat().st_size > 0:
@@ -85,6 +97,9 @@ def load_master() -> pd.DataFrame:
         for c in MASTER_COLUMNS:
             if c not in df.columns:
                 df[c] = ""
+        for col in ["on_leave", "active"]:
+            if col in df.columns:
+                df[col] = df[col].apply(normalize_bool_str)
         return df[MASTER_COLUMNS]
     # Create empty
     df = pd.DataFrame(columns=MASTER_COLUMNS)
@@ -96,7 +111,7 @@ def save_master(df: pd.DataFrame) -> None:
     # Normalize booleans to "True"/"False" strings for CSV stability
     for col in ["on_leave", "active"]:
         if col in df.columns:
-            df[col] = df[col].astype(str)
+            df[col] = df[col].apply(normalize_bool_str)
     df[MASTER_COLUMNS].to_csv(MASTER_PATH, index=False)
 
 def ensure_audit_header() -> None:
@@ -120,12 +135,9 @@ def log_action(user: str, week: str, action: str, gpn: str, field: str, old, new
     entry.to_csv(AUDIT_PATH, mode="a", header=False, index=False)
 
 def ensure_default_photo() -> None:
-    PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
-    if DEFAULT_PHOTO.exists():
-        return
-    # Simple neutral placeholder
-    img = Image.new("RGB", (DEFAULT_PHOTO_SIZE, DEFAULT_PHOTO_SIZE), color=(230, 230, 230))
-    img.save(DEFAULT_PHOTO, format="JPEG", quality=90)
+    if not DEFAULT_PHOTO.exists():
+        st.error(f"Missing placeholder image: {DEFAULT_PHOTO}")
+        st.stop()
 
 
 
@@ -141,7 +153,6 @@ with st.sidebar:
     st.write("Audit:", str(AUDIT_PATH))
     st.write("Photos:", str(PHOTOS_DIR))
 
-# -------------------------------------------------
 # Upload PowerBI export
 # -------------------------------------------------
 uploaded = st.file_uploader("Upload PowerBI export (xlsx)", type=["xlsx"])
@@ -151,17 +162,19 @@ if not uploaded:
     st.stop()
 
 # Run ETL
-raw, totals = run_etl(uploaded)
+try:
+    raw, totals, week_meta = run_etl(uploaded)
+except ValueError as exc:
+    st.error(str(exc))
+    st.stop()
+
 org_cfg = load_org_config()
 
 # Defensive: ensure required columns exist
 if "rank_bucket" not in raw.columns:
     raw["rank_bucket"] = raw.get("Rank Description", "")
 
-if "Week" in raw.columns and len(raw) > 0:
-    week = str(raw["Week"].iloc[0])
-else:
-    week = "UNKNOWN"
+week = week_meta.get("export_format", "UNKNOWN")
 
 # Load master roster
 master = load_master()
@@ -173,9 +186,15 @@ if len(master) > 0:
 raw["GPN"] = raw["GPN"].astype(str).str.strip()
 
 # -------------------------------------------------
+# Week metadata
+# -------------------------------------------------
+st.subheader("Week")
+st.write(f"Week: {week_meta.get('short_key', 'UNKNOWN')} ({week_meta.get('export_format', 'UNKNOWN')})")
+st.write(f"Period: {week_meta.get('start_date', 'UNKNOWN')} - {week_meta.get('end_date', 'UNKNOWN')}")
+
 # Summary / totals
 # -------------------------------------------------
-st.subheader("📊 Totals (per BU/SSL)")
+st.subheader("Totals (per BU/SSL)")
 if totals is not None and len(totals) > 0:
     display_totals = totals.copy()
     # Pretty formatting
@@ -185,6 +204,34 @@ if totals is not None and len(totals) > 0:
     st.dataframe(display_totals)
 else:
     st.warning("No totals computed (check mapping / data).")
+
+st.subheader("Planned output folders")
+outputs_base = BASE / "outputs"
+if totals is not None and len(totals) > 0 and "BU" in totals.columns and "SSL" in totals.columns:
+    unique_pairs = totals[["BU", "SSL"]].drop_duplicates()
+    for _, row in unique_pairs.iterrows():
+        out_dir = get_output_dir(week_meta.get('short_key', 'UNKNOWN'), row["BU"], row["SSL"], outputs_base)
+        st.write(str(out_dir))
+else:
+    st.info("No BU/SSL totals available for output folder resolution.")
+
+st.subheader("📄 Generate Excel outputs")
+if st.button("Generate Excel for all SSLs"):
+    created_paths = []
+    bu = "Denmark"
+    week_ctx = dict(week_meta)
+    week_ctx["master_df"] = master
+    for ssl in ["TC", "BC", "RC"]:
+        detail_df = build_ssl_dataset(master, raw, bu, ssl)
+        summary_df = build_ssl_summary(totals, raw, bu, ssl, week_ctx)
+        out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
+        filename = f"{week_meta.get('short_key', 'UNKNOWN')} - {week_meta.get('export_format', 'UNKNOWN')}_{ssl}.xlsx"
+        out_path = out_dir / filename
+        write_ssl_excel(detail_df, summary_df, out_path)
+        created_paths.append(out_path)
+    st.success(f"Created {len(created_paths)} Excel files.")
+    for path in created_paths:
+        st.write(str(path))
 
 st.markdown("---")
 
@@ -306,6 +353,15 @@ missing_df = master[master["gpn"].isin(missing_gpns)].copy() if len(master) > 0 
 if len(missing_df) == 0:
     st.success("No missing employees found.")
 else:
+    if st.button("Mark ALL missing as on leave"):
+        for _, row in missing_df.iterrows():
+            gpn = row["gpn"]
+            current = row.get("on_leave", "False")
+            master.loc[master["gpn"] == gpn, "on_leave"] = "True"
+            log_action(user, week, "ON_LEAVE", gpn, "on_leave", current, "True", comment="Bulk: missing from export => on leave")
+        save_master(master)
+        st.warning(f"Marked {len(missing_df)} employees as on leave. Reload page to see QC update.")
+        st.stop()
     missing_df = missing_df.sort_values(["ssl", "display_name"], na_position="last")
     for _, row in missing_df.iterrows():
         gpn = row["gpn"]
@@ -356,7 +412,7 @@ else:
                     st.stop()
 
 # Photos (upload + crop)
-st.subheader("?? Photos (upload + crop)")
+st.subheader("📸 Photos (upload + crop)")
 ensure_default_photo()
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
