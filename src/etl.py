@@ -25,6 +25,10 @@ RANK_MAP = {
 # -------------------------------------------------
 # Fix names to 'Firstname Lastname' format
 # -------------------------------------------------
+def _norm_week(s: object) -> str:
+    # Collapse any whitespace (double spaces, tabs, NBSP) to single spaces
+    return " ".join(str(s).split()) if s is not None else ""
+
 def normalize_display_name(pbi_name: str) -> str:
     """
     Convert 'Lastname, Firstname(s)' -> 'Firstname(s) Lastname'
@@ -57,6 +61,59 @@ def load_week_config() -> pd.DataFrame:
     return pd.DataFrame()
 
 # -------------------------------------------------
+# Week metadata resolution
+# -------------------------------------------------
+def resolve_week_meta(week_str: str, week_cfg: pd.DataFrame) -> Dict:
+    """
+    Returns dict with keys:
+      short_key, export_format, long_format, start_date, end_date, real_week
+    Raises ValueError if not found.
+    """
+    if week_cfg is None or week_cfg.empty:
+        raise ValueError(f"Week config is empty; cannot resolve week '{week_str}'")
+
+    week_val = _norm_week(week_str)
+    if not week_val:
+        raise ValueError("Week value is empty; cannot resolve week metadata")
+
+    cfg = week_cfg.copy()
+    cfg["export_format_norm"] = cfg["export_format"].apply(_norm_week)
+
+    matches = cfg[cfg["export_format_norm"] == week_val]
+
+    if matches.empty:
+        raise ValueError(f"Week '{week_val}' not found in week config")
+
+    row = matches.iloc[0]
+    return {
+        "short_key": str(row["short_key"]).strip(),
+        "export_format": str(row["export_format"]).strip(),
+        "long_format": str(row["long_format"]).strip(),
+        "real_week": str(row["real_week"]).strip(),
+        "start_date": str(row["start_date"]).strip(),
+        "end_date": str(row["end_date"]).strip(),
+    }
+
+# -------------------------------------------------
+# Output paths
+# -------------------------------------------------
+def get_output_dir(short_key: str, bu: str, ssl: str, base_dir: Path) -> Path:
+    """
+    Returns outputs/<short_key>/<BU>_<SSL> and ensures it exists.
+    """
+    def sanitize(part: str) -> str:
+        if part is None or pd.isna(part):
+            return "UNKNOWN"
+        cleaned = str(part).strip().replace(" ", "_")
+        return cleaned.replace("/", "").replace("\\", "")
+
+    safe_bu = sanitize(bu)
+    safe_ssl = sanitize(ssl)
+    output_dir = base_dir / short_key / f"{safe_bu}_{safe_ssl}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+# -------------------------------------------------
 # PowerBI export loader
 # -------------------------------------------------
 def load_powerbi_export(
@@ -79,9 +136,9 @@ def load_powerbi_export(
     # Most reliable is Employee Name == 'Total' (as in your screenshot).
     if "Employee Name" in df.columns:
         total_mask = df["Employee Name"].astype(str).str.strip().str.lower().eq("total")
-        if total_mask.any():
-            first_total_idx = total_mask.idxmax()  # first True index
-            df = df.loc[: first_total_idx - 1].copy()
+        total_positions = np.where(total_mask.to_numpy())[0]
+        if total_positions.size > 0:
+            df = df.iloc[: total_positions[0]].copy()
 
     # Also drop any footer lines like "Applied filters..."
     # These sometimes appear in the "Week" column or another text column.
@@ -135,6 +192,7 @@ def map_competency_to_ssl(df: pd.DataFrame, org_cfg: Dict) -> pd.DataFrame:
 
     df["BU"] = mapped.apply(lambda x: x[0] if isinstance(x, tuple) else None)
     df["SSL"] = mapped.apply(lambda x: x[1] if isinstance(x, tuple) else None)
+    df["unmapped_competency"] = df["BU"].isna() | df["SSL"].isna()
 
     return df
 
@@ -219,23 +277,35 @@ def compute_aggregates(df: pd.DataFrame) -> pd.DataFrame:
 # -------------------------------------------------
 def run_etl(
     export_source: Union[str, Path, object]
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
     """
     Main ETL pipeline.
 
     Returns:
       raw_df    -> row-level enriched dataframe
       totals_df -> aggregated utilization per BU/SSL
+      week_meta -> week metadata dict
     """
     org_cfg = load_org_config()
 
     df = load_powerbi_export(export_source)
+
+    week_cfg = load_week_config()
+    week_val = None
+    if "Week" in df.columns:
+        week_series = df["Week"].dropna()
+        if len(week_series) > 0:
+            week_val = _norm_week(week_series.iloc[0])
+    if not week_val:
+        raise ValueError("Week column missing or empty in PowerBI export")
+    week_meta = resolve_week_meta(week_val, week_cfg)
+
     df = map_competency_to_ssl(df, org_cfg)
     df = enrich_flags_and_util(df)
 
     totals = compute_aggregates(df)
 
-    return df, totals
+    return df, totals, week_meta
 
 # -------------------------------------------------
 # CLI helper (optional)
@@ -247,8 +317,9 @@ if __name__ == "__main__":
         print("Usage: python src/etl.py <powerbi_export.xlsx>")
         sys.exit(1)
 
-    raw_df, totals_df = run_etl(sys.argv[1])
+    raw_df, totals_df, week_meta = run_etl(sys.argv[1])
 
     print("Rows:", len(raw_df))
+    print("Week:", week_meta)
     print("\nAggregated totals:")
     print(totals_df)
