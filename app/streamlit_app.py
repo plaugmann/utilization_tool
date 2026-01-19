@@ -7,7 +7,6 @@ import io
 import urllib.request
 from PIL import Image
 import shutil
-import time
 import os
 from streamlit_cropper import st_cropper
 
@@ -23,6 +22,7 @@ from src.render_excel import build_ssl_dataset, build_ssl_summary, write_ssl_exc
 from src.render_html import write_ssl_html  # noqa: E402
 from src.html_to_pdf import html_to_pdf  # noqa: E402
 from src.html_to_image import html_to_png  # noqa: E402
+from src.utils import load_app_config  # noqa: E402
 
 # -------------------------------------------------
 # Paths
@@ -175,6 +175,7 @@ except ValueError as exc:
     st.stop()
 
 org_cfg = load_org_config()
+app_cfg = load_app_config()
 
 # Defensive: ensure required columns exist
 if "rank_bucket" not in raw.columns:
@@ -212,7 +213,10 @@ else:
     st.warning("No totals computed (check mapping / data).")
 
 st.subheader("Planned output folders")
-outputs_base = BASE / "outputs"
+outputs_dir = app_cfg.get("outputs_dir", "outputs")
+outputs_base = BASE / outputs_dir
+default_bu = app_cfg.get("default_bu", "Denmark")
+ssl_order = app_cfg.get("ssl_order", ["TC", "BC", "RC"])
 if totals is not None and len(totals) > 0 and "BU" in totals.columns and "SSL" in totals.columns:
     unique_pairs = totals[["BU", "SSL"]].drop_duplicates()
     for _, row in unique_pairs.iterrows():
@@ -224,10 +228,10 @@ else:
 st.subheader("📦 Generate Excel + HTML/PDF outputs")
 if st.button("Generate outputs for all SSLs"):
     created_paths = []
-    bu = "Denmark"
+    bu = default_bu
     week_ctx = dict(week_meta)
     week_ctx["master_df"] = master
-    for ssl in ["TC", "BC", "RC"]:
+    for ssl in ssl_order:
         detail_df = build_ssl_dataset(master, raw, bu, ssl)
         summary_df = build_ssl_summary(totals, raw, bu, ssl, week_ctx)
         summary_map = {row["Metric"]: row["Value"] for _, row in summary_df.iterrows()}
@@ -248,24 +252,27 @@ if st.button("Generate outputs for all SSLs"):
         excel_path = out_dir / f"{base_name}.xlsx"
         html_path = out_dir / f"{base_name}.html"
         pdf_path = out_dir / f"{base_name}.pdf"
+        png_path = out_dir / f"{base_name}.png"
         write_ssl_excel(detail_df, summary_df, excel_path)
         write_ssl_html(detail_df, summary, html_path, PHOTOS_DIR, DEFAULT_PHOTO, ssl, bu)
         html_to_pdf(html_path, pdf_path)
-        created_paths.extend([excel_path, html_path, pdf_path])
+        html_to_png(html_path, png_path)
+        created_paths.extend([excel_path, html_path, pdf_path, png_path])
     st.success(f"Created {len(created_paths)} output files.")
     for path in created_paths:
         st.write(str(path))
 
 st.subheader("📤 Copy TC/BC outputs to finance folders")
 if st.button("Copy latest TC/BC Excel + PDF"):
-    copy_targets = {
-        "TC": Path(r"C:\Users\Soeren.Plaugmann\OneDrive - EY\05 - Financials\Utilization"),
-        "BC": Path(r"C:\Users\Soeren.Plaugmann\EY\Business Consulting - General\01 - Financials\01 - Utilization"),
-    }
-    bu = "Denmark"
+    copy_targets = app_cfg.get("finance_copy_targets", {})
+    bu = default_bu
     copied = []
     missing = []
+    if not copy_targets:
+        st.error("Finance copy targets are not configured.")
+        st.stop()
     for ssl, dest_dir in copy_targets.items():
+        dest_dir = Path(dest_dir)
         out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
         base_name = f"{week_meta.get('short_key', 'UNKNOWN')} - {week_meta.get('export_format', 'UNKNOWN')}_{ssl}"
         for ext in [".xlsx", ".pdf"]:
@@ -288,11 +295,19 @@ if st.button("Copy latest TC/BC Excel + PDF"):
 
 st.subheader("✉️ Prepare leadership email drafts")
 if st.button("Prepare utilization email drafts"):
-    ssls = ["TC", "BC", "RC"]
-    bu = "Denmark"
+    ssls = ssl_order
+    bu = default_bu
     missing = []
     attachments_by_ssl = {}
     all_attachments = []
+    email_cfg = app_cfg.get("email", {})
+    senior_cfg = email_cfg.get("senior_leadership", {})
+    senior_to = senior_cfg.get("to")
+    senior_subject = senior_cfg.get("subject")
+    leadership_subject = email_cfg.get("leadership_subject")
+    leadership_cc = email_cfg.get("leadership_cc")
+    leadership_recipients = email_cfg.get("leadership_recipients", {})
+    leadership_ssls = email_cfg.get("leadership_ssls", [])
 
     for ssl in ssls:
         out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
@@ -318,30 +333,34 @@ if st.button("Prepare utilization email drafts"):
     outlook = win32com.client.Dispatch("Outlook.Application")
 
     # 1) Senior leadership: all SSL Excel + PDF
+    if not senior_to or not senior_subject:
+        st.error("Senior leadership email settings are missing in config.")
+        pythoncom.CoUninitialize()
+        st.stop()
+
     mail_all = outlook.CreateItem(0)
-    mail_all.To = "Ledergruppen - FSO; FSO Partner og AP gruppe"
-    mail_all.Subject = "Utilization sidste uge"
+    mail_all.To = senior_to
+    mail_all.Subject = senior_subject
     for path in all_attachments:
         mail_all.Attachments.Add(str(path))
     mail_all.Display(False)
 
-    # 2) TC leadership
-    mail_tc = outlook.CreateItem(0)
-    mail_tc.To = "D-D-P-FSO-DK-TC-Leadership <D-D-P-FSO-DK-TC-Leadership@ey.net>"
-    mail_tc.CC = "Celia Sofie Vibe Sandell <Celia.Sofie.Vibe.Sandell@dk.ey.com>"
-    mail_tc.Subject = "Utilization last week"
-    for path in attachments_by_ssl.get("TC", []):
-        mail_tc.Attachments.Add(str(path))
-    mail_tc.Display(False)
+    if not leadership_subject or not leadership_cc or not leadership_recipients:
+        st.error("Leadership email settings are missing in config.")
+        pythoncom.CoUninitialize()
+        st.stop()
 
-    # 3) BC leadership
-    mail_bc = outlook.CreateItem(0)
-    mail_bc.To = "D-D-P-FSO-DK-TC-Leadership <D-D-P-FSO-DK-TC-Leadership@ey.net>"
-    mail_bc.CC = "Celia Sofie Vibe Sandell <Celia.Sofie.Vibe.Sandell@dk.ey.com>"
-    mail_bc.Subject = "Utilization last week"
-    for path in attachments_by_ssl.get("BC", []):
-        mail_bc.Attachments.Add(str(path))
-    mail_bc.Display(False)
+    for ssl in leadership_ssls:
+        recipient = leadership_recipients.get(ssl)
+        if not recipient:
+            continue
+        mail_ssl = outlook.CreateItem(0)
+        mail_ssl.To = recipient
+        mail_ssl.CC = leadership_cc
+        mail_ssl.Subject = leadership_subject
+        for path in attachments_by_ssl.get(ssl, []):
+            mail_ssl.Attachments.Add(str(path))
+        mail_ssl.Display(False)
 
     pythoncom.CoUninitialize()
     st.success("Draft emails prepared in Outlook.")
@@ -379,7 +398,7 @@ else:
     for _, row in new_df.iterrows():
         gpn = row["GPN"]
         name = row.get("display_name_auto", row.get("Employee Name", ""))
-        bu = row.get("BU", "Denmark")
+        bu = row.get("BU", default_bu)
         ssl = row.get("SSL", "")
         rank_bucket = row.get("rank_bucket", "")
         with st.expander(f"{name} ({gpn})"):
@@ -436,7 +455,7 @@ else:
             if gpn in master["gpn"].astype(str).values:
                 continue
             name = row.get("display_name_auto", row.get("Employee Name", ""))
-            bu = row.get("BU", "Denmark")
+            bu = row.get("BU", default_bu)
             ssl = row.get("SSL", "")
             rank_bucket = row.get("rank_bucket", "")
 
@@ -577,8 +596,8 @@ else:
                 st.write(f"Master SSL: **{master_ssl}**")
                 new_ssl = st.selectbox(
                     "Set master SSL to",
-                    options=["TC", "BC", "RC"],
-                    index=["TC", "BC", "RC"].index(pbi_ssl) if pbi_ssl in ["TC", "BC", "RC"] else 0,
+                    options=ssl_order,
+                    index=ssl_order.index(pbi_ssl) if pbi_ssl in ssl_order else 0,
                     key=f"sslpick_{gpn}"
                 )
                 if st.button("Update master SSL", key=f"updssl_{gpn}"):

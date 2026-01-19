@@ -1,0 +1,24 @@
+default_bu: "Denmark"
+ssl_order:
+  - "TC"
+  - "BC"
+  - "RC"
+outputs_dir: "outputs"
+background_image: "assets/background.png"
+
+finance_copy_targets:
+  TC: "C:\\Users\\Soeren.Plaugmann\\OneDrive - EY\\05 - Financials\\Utilization"
+  BC: "C:\\Users\\Soeren.Plaugmann\\EY\\Business Consulting - General\\01 - Financials\\01 - Utilization"
+
+email:
+  senior_leadership:
+    to: "Ledergruppen - FSO; FSO Partner og AP gruppe"
+    subject: "Utilization sidste uge"
+  leadership_subject: "Utilization last week"
+  leadership_cc: "Celia Sofie Vibe Sandell <Celia.Sofie.Vibe.Sandell@dk.ey.com>"
+  leadership_recipients:
+    TC: "D-D-P-FSO-DK-TC-Leadership <D-D-P-FSO-DK-TC-Leadership@ey.net>"
+    BC: "D-D-P-FSO-DK-TC-Leadership <D-D-P-FSO-DK-TC-Leadership@ey.net>"
+  leadership_ssls:
+    - "TC"
+    - "BC"

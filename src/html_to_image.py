@@ -7,7 +7,7 @@ from playwright.sync_api import sync_playwright
 
 def html_to_png(html_path: Path, png_path: Path, width: int = 1919, height: int = 1079) -> None:
     """
-    Renders an HTML file to a PNG image for email embedding.
+    Renders an HTML file to a PNG image for manual email insertion.
     """
     if sys.platform == "win32":
         try:

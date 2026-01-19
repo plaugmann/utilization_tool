@@ -8,13 +8,8 @@ import io
 import pandas as pd
 from PIL import Image
 from jinja2 import Environment, BaseLoader
-
-
-SSL_DISPLAY_NAMES = {
-    "TC": "Technology Consulting",
-    "BC": "Business Consulting",
-    "RC": "Risk Consulting",
-}
+from src.etl import load_org_config
+from src.utils import load_app_config
 
 
 def _coerce_bool(value: object) -> bool:
@@ -100,6 +95,13 @@ def _image_to_data_uri(path: Path) -> str:
     return f"data:image/jpeg;base64,{encoded}"
 
 
+def _ssl_display_name(ssl: str, bu: str) -> str:
+    cfg = load_org_config()
+    bu_cfg = cfg.get("business_units", {}).get(str(bu), {})
+    ssl_cfg = bu_cfg.get("ssls", {}).get(str(ssl), {})
+    return ssl_cfg.get("display_name") or str(ssl).strip()
+
+
 def _file_to_data_uri(path: Path) -> str:
     data = path.read_bytes()
     encoded = base64.b64encode(data).decode("ascii")
@@ -122,7 +124,7 @@ def write_ssl_html(
     """
     out_html_path.parent.mkdir(parents=True, exist_ok=True)
 
-    ssl_display = SSL_DISPLAY_NAMES.get(str(ssl).strip(), str(ssl).strip())
+    ssl_display = _ssl_display_name(ssl, bu)
 
     start_date = str(summary.get("start_date", "")).strip()
     end_date = str(summary.get("end_date", "")).strip()
@@ -131,7 +133,11 @@ def write_ssl_html(
     util_val = summary.get("util_excl_missing", summary.get("util_all"))
     util_percent = _fmt_percent(util_val, decimals=0)
 
-    bg_path = Path(__file__).resolve().parents[1] / "assets" / "background.png"
+    app_cfg = load_app_config()
+    bg_rel = app_cfg.get("background_image")
+    if not bg_rel:
+        raise ValueError("background_image is not configured in app config")
+    bg_path = (Path(__file__).resolve().parents[1] / bg_rel).resolve()
     bg_data = _file_to_data_uri(bg_path)
 
     rank_order = [
