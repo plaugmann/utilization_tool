@@ -17,6 +17,9 @@ if str(BASE) not in sys.path:
 
 from src.etl import run_etl, load_org_config, get_output_dir  # noqa: E402
 from src.render_excel import build_ssl_dataset, build_ssl_summary, write_ssl_excel  # noqa: E402
+from src.render_pdf import write_ssl_pdf  # noqa: E402
+from src.render_html import write_ssl_html  # noqa: E402
+from src.html_to_pdf import html_to_pdf  # noqa: E402
 
 # -------------------------------------------------
 # Paths
@@ -230,6 +233,70 @@ if st.button("Generate Excel for all SSLs"):
         write_ssl_excel(detail_df, summary_df, out_path)
         created_paths.append(out_path)
     st.success(f"Created {len(created_paths)} Excel files.")
+    for path in created_paths:
+        st.write(str(path))
+
+st.subheader("🖼️ Generate PDF photo walls")
+if st.button("Generate PDFs for all SSLs"):
+    created_paths = []
+    bu = "Denmark"
+    week_ctx = dict(week_meta)
+    week_ctx["master_df"] = master
+    for ssl in ["TC", "BC", "RC"]:
+        detail_df = build_ssl_dataset(master, raw, bu, ssl)
+        summary_df = build_ssl_summary(totals, raw, bu, ssl, week_ctx)
+        summary_map = {row["Metric"]: row["Value"] for _, row in summary_df.iterrows()}
+        summary = {
+            "short_key": week_meta.get("short_key", ""),
+            "export_format": week_meta.get("export_format", ""),
+            "start_date": week_meta.get("start_date", ""),
+            "end_date": week_meta.get("end_date", ""),
+            "util_all": summary_map.get("Util all", None),
+            "util_excl_missing": summary_map.get("Util excl missing", None),
+            "headcount": summary_map.get("Headcount (master active)", 0),
+            "missing_timesheets": summary_map.get("Missing timesheets", 0),
+            "vacation": summary_map.get("Vacation", 0),
+            "on_leave": summary_map.get("On leave", 0),
+        }
+        out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
+        filename = f"{week_meta.get('short_key', 'UNKNOWN')} - {week_meta.get('export_format', 'UNKNOWN')}_{ssl}.pdf"
+        out_path = out_dir / filename
+        write_ssl_pdf(detail_df, summary, out_path, PHOTOS_DIR, DEFAULT_PHOTO)
+        created_paths.append(out_path)
+    st.success(f"Created {len(created_paths)} PDF files.")
+    for path in created_paths:
+        st.write(str(path))
+
+st.subheader("Generate HTML + PDF (photo wall)")
+if st.button("Generate HTML+PDF for all SSLs"):
+    created_paths = []
+    bu = "Denmark"
+    week_ctx = dict(week_meta)
+    week_ctx["master_df"] = master
+    for ssl in ["TC", "BC", "RC"]:
+        detail_df = build_ssl_dataset(master, raw, bu, ssl)
+        summary_df = build_ssl_summary(totals, raw, bu, ssl, week_ctx)
+        summary_map = {row["Metric"]: row["Value"] for _, row in summary_df.iterrows()}
+        summary = {
+            "short_key": week_meta.get("short_key", ""),
+            "export_format": week_meta.get("export_format", ""),
+            "start_date": week_meta.get("start_date", ""),
+            "end_date": week_meta.get("end_date", ""),
+            "util_all": summary_map.get("Util all", None),
+            "util_excl_missing": summary_map.get("Util excl missing", None),
+            "headcount": summary_map.get("Headcount (master active)", 0),
+            "missing_timesheets": summary_map.get("Missing timesheets", 0),
+            "vacation": summary_map.get("Vacation", 0),
+            "on_leave": summary_map.get("On leave", 0),
+        }
+        out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
+        base_name = f"{week_meta.get('short_key', 'UNKNOWN')} - {week_meta.get('export_format', 'UNKNOWN')}_{ssl}"
+        html_path = out_dir / f"{base_name}.html"
+        pdf_path = out_dir / f"{base_name}.pdf"
+        write_ssl_html(detail_df, summary, html_path, PHOTOS_DIR, DEFAULT_PHOTO, ssl, bu)
+        html_to_pdf(html_path, pdf_path)
+        created_paths.extend([html_path, pdf_path])
+    st.success(f"Created {len(created_paths)} HTML/PDF files.")
     for path in created_paths:
         st.write(str(path))
 

@@ -15,3 +15,5 @@ streamlit-cropper>=0.2.2
 # PDF & image rendering (used later)
 reportlab>=4.0
 pillow>=10.0
+playwright
+jinja2
