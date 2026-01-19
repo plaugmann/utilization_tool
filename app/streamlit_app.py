@@ -6,6 +6,9 @@ import pandas as pd
 import io
 import urllib.request
 from PIL import Image
+import shutil
+import time
+import os
 from streamlit_cropper import st_cropper
 
 # -------------------------------------------------
@@ -17,9 +20,9 @@ if str(BASE) not in sys.path:
 
 from src.etl import run_etl, load_org_config, get_output_dir  # noqa: E402
 from src.render_excel import build_ssl_dataset, build_ssl_summary, write_ssl_excel  # noqa: E402
-from src.render_pdf import write_ssl_pdf  # noqa: E402
 from src.render_html import write_ssl_html  # noqa: E402
 from src.html_to_pdf import html_to_pdf  # noqa: E402
+from src.html_to_image import html_to_png  # noqa: E402
 
 # -------------------------------------------------
 # Paths
@@ -218,57 +221,8 @@ if totals is not None and len(totals) > 0 and "BU" in totals.columns and "SSL" i
 else:
     st.info("No BU/SSL totals available for output folder resolution.")
 
-st.subheader("📄 Generate Excel outputs")
-if st.button("Generate Excel for all SSLs"):
-    created_paths = []
-    bu = "Denmark"
-    week_ctx = dict(week_meta)
-    week_ctx["master_df"] = master
-    for ssl in ["TC", "BC", "RC"]:
-        detail_df = build_ssl_dataset(master, raw, bu, ssl)
-        summary_df = build_ssl_summary(totals, raw, bu, ssl, week_ctx)
-        out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
-        filename = f"{week_meta.get('short_key', 'UNKNOWN')} - {week_meta.get('export_format', 'UNKNOWN')}_{ssl}.xlsx"
-        out_path = out_dir / filename
-        write_ssl_excel(detail_df, summary_df, out_path)
-        created_paths.append(out_path)
-    st.success(f"Created {len(created_paths)} Excel files.")
-    for path in created_paths:
-        st.write(str(path))
-
-st.subheader("🖼️ Generate PDF photo walls")
-if st.button("Generate PDFs for all SSLs"):
-    created_paths = []
-    bu = "Denmark"
-    week_ctx = dict(week_meta)
-    week_ctx["master_df"] = master
-    for ssl in ["TC", "BC", "RC"]:
-        detail_df = build_ssl_dataset(master, raw, bu, ssl)
-        summary_df = build_ssl_summary(totals, raw, bu, ssl, week_ctx)
-        summary_map = {row["Metric"]: row["Value"] for _, row in summary_df.iterrows()}
-        summary = {
-            "short_key": week_meta.get("short_key", ""),
-            "export_format": week_meta.get("export_format", ""),
-            "start_date": week_meta.get("start_date", ""),
-            "end_date": week_meta.get("end_date", ""),
-            "util_all": summary_map.get("Util all", None),
-            "util_excl_missing": summary_map.get("Util excl missing", None),
-            "headcount": summary_map.get("Headcount (master active)", 0),
-            "missing_timesheets": summary_map.get("Missing timesheets", 0),
-            "vacation": summary_map.get("Vacation", 0),
-            "on_leave": summary_map.get("On leave", 0),
-        }
-        out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
-        filename = f"{week_meta.get('short_key', 'UNKNOWN')} - {week_meta.get('export_format', 'UNKNOWN')}_{ssl}.pdf"
-        out_path = out_dir / filename
-        write_ssl_pdf(detail_df, summary, out_path, PHOTOS_DIR, DEFAULT_PHOTO)
-        created_paths.append(out_path)
-    st.success(f"Created {len(created_paths)} PDF files.")
-    for path in created_paths:
-        st.write(str(path))
-
-st.subheader("Generate HTML + PDF (photo wall)")
-if st.button("Generate HTML+PDF for all SSLs"):
+st.subheader("📦 Generate Excel + HTML/PDF outputs")
+if st.button("Generate outputs for all SSLs"):
     created_paths = []
     bu = "Denmark"
     week_ctx = dict(week_meta)
@@ -291,14 +245,116 @@ if st.button("Generate HTML+PDF for all SSLs"):
         }
         out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
         base_name = f"{week_meta.get('short_key', 'UNKNOWN')} - {week_meta.get('export_format', 'UNKNOWN')}_{ssl}"
+        excel_path = out_dir / f"{base_name}.xlsx"
         html_path = out_dir / f"{base_name}.html"
         pdf_path = out_dir / f"{base_name}.pdf"
+        write_ssl_excel(detail_df, summary_df, excel_path)
         write_ssl_html(detail_df, summary, html_path, PHOTOS_DIR, DEFAULT_PHOTO, ssl, bu)
         html_to_pdf(html_path, pdf_path)
-        created_paths.extend([html_path, pdf_path])
-    st.success(f"Created {len(created_paths)} HTML/PDF files.")
+        created_paths.extend([excel_path, html_path, pdf_path])
+    st.success(f"Created {len(created_paths)} output files.")
     for path in created_paths:
         st.write(str(path))
+
+st.subheader("📤 Copy TC/BC outputs to finance folders")
+if st.button("Copy latest TC/BC Excel + PDF"):
+    copy_targets = {
+        "TC": Path(r"C:\Users\Soeren.Plaugmann\OneDrive - EY\05 - Financials\Utilization"),
+        "BC": Path(r"C:\Users\Soeren.Plaugmann\EY\Business Consulting - General\01 - Financials\01 - Utilization"),
+    }
+    bu = "Denmark"
+    copied = []
+    missing = []
+    for ssl, dest_dir in copy_targets.items():
+        out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
+        base_name = f"{week_meta.get('short_key', 'UNKNOWN')} - {week_meta.get('export_format', 'UNKNOWN')}_{ssl}"
+        for ext in [".xlsx", ".pdf"]:
+            src_path = out_dir / f"{base_name}{ext}"
+            if not src_path.exists():
+                missing.append(src_path)
+                continue
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest_path = dest_dir / src_path.name
+            shutil.copy2(src_path, dest_path)
+            copied.append(dest_path)
+    if copied:
+        st.success(f"Copied {len(copied)} files.")
+        for path in copied:
+            st.write(str(path))
+    if missing:
+        st.warning("Some source files were missing and were not copied.")
+        for path in missing:
+            st.write(str(path))
+
+st.subheader("✉️ Prepare leadership email drafts")
+if st.button("Prepare utilization email drafts"):
+    ssls = ["TC", "BC", "RC"]
+    bu = "Denmark"
+    missing = []
+    attachments_by_ssl = {}
+    all_attachments = []
+
+    for ssl in ssls:
+        out_dir = get_output_dir(week_meta.get("short_key", "UNKNOWN"), bu, ssl, outputs_base)
+        base_name = f"{week_meta.get('short_key', 'UNKNOWN')} - {week_meta.get('export_format', 'UNKNOWN')}_{ssl}"
+        ssl_attachments = []
+        for ext in [".xlsx", ".pdf"]:
+            src_path = out_dir / f"{base_name}{ext}"
+            if src_path.exists():
+                ssl_attachments.append(src_path)
+                all_attachments.append(src_path)
+            else:
+                missing.append(src_path)
+        attachments_by_ssl[ssl] = ssl_attachments
+
+    try:
+        import win32com.client  # type: ignore
+        import pythoncom  # type: ignore
+    except Exception:
+        st.error("pywin32 is required to create Outlook drafts. Install with `pip install pywin32`.")
+        st.stop()
+
+    pythoncom.CoInitialize()
+    outlook = win32com.client.Dispatch("Outlook.Application")
+
+    # 1) Senior leadership: all SSL Excel + PDF
+    mail_all = outlook.CreateItem(0)
+    mail_all.To = "Ledergruppen - FSO; FSO Partner og AP gruppe"
+    mail_all.Subject = "Utilization sidste uge"
+    for path in all_attachments:
+        mail_all.Attachments.Add(str(path))
+    mail_all.Display(False)
+
+    # 2) TC leadership
+    mail_tc = outlook.CreateItem(0)
+    mail_tc.To = "D-D-P-FSO-DK-TC-Leadership <D-D-P-FSO-DK-TC-Leadership@ey.net>"
+    mail_tc.CC = "Celia Sofie Vibe Sandell <Celia.Sofie.Vibe.Sandell@dk.ey.com>"
+    mail_tc.Subject = "Utilization last week"
+    for path in attachments_by_ssl.get("TC", []):
+        mail_tc.Attachments.Add(str(path))
+    mail_tc.Display(False)
+
+    # 3) BC leadership
+    mail_bc = outlook.CreateItem(0)
+    mail_bc.To = "D-D-P-FSO-DK-TC-Leadership <D-D-P-FSO-DK-TC-Leadership@ey.net>"
+    mail_bc.CC = "Celia Sofie Vibe Sandell <Celia.Sofie.Vibe.Sandell@dk.ey.com>"
+    mail_bc.Subject = "Utilization last week"
+    for path in attachments_by_ssl.get("BC", []):
+        mail_bc.Attachments.Add(str(path))
+    mail_bc.Display(False)
+
+    pythoncom.CoUninitialize()
+    st.success("Draft emails prepared in Outlook.")
+    if missing:
+        st.warning("Some files were missing and were not attached.")
+        for path in missing:
+            st.write(str(path))
+
+    reports_dir = outputs_base / week_meta.get("short_key", "UNKNOWN")
+    try:
+        os.startfile(str(reports_dir))
+    except Exception:
+        st.info(f"Open reports folder manually: {reports_dir}")
 
 st.markdown("---")
 
@@ -415,7 +471,12 @@ else:
 
 # Missing employees (assumed on leave)
 st.subheader("🚫 Missing employees (in master, not in PowerBI) → assumed On leave")
+show_inactive_missing = st.checkbox("Show inactive/leavers in missing list", value=False)
 missing_df = master[master["gpn"].isin(missing_gpns)].copy() if len(master) > 0 else pd.DataFrame()
+if len(missing_df) > 0 and not show_inactive_missing:
+    missing_df = missing_df[
+        missing_df["active"].apply(normalize_bool_str) == "True"
+    ].copy()
 
 if len(missing_df) == 0:
     st.success("No missing employees found.")
@@ -429,19 +490,68 @@ else:
         save_master(master)
         st.warning(f"Marked {len(missing_df)} employees as on leave. Reload page to see QC update.")
         st.stop()
+    if st.button("Mark ALL missing as leavers (active=False)"):
+        updated = 0
+        for _, row in missing_df.iterrows():
+            gpn = row["gpn"]
+            current_active = normalize_bool_str(row.get("active", "True"))
+            if current_active == "False":
+                continue
+            master.loc[master["gpn"] == gpn, "active"] = "False"
+            master.loc[master["gpn"] == gpn, "on_leave"] = "False"
+            log_action(
+                user,
+                week,
+                "LEAVER",
+                gpn,
+                "active",
+                current_active,
+                "False",
+                comment="Marked as leaver from Missing employees",
+            )
+            updated += 1
+        if updated > 0:
+            save_master(master)
+            st.success(f"Marked {updated} employees as leavers. Reload page to see QC update.")
+            st.stop()
+        st.info("All missing employees are already inactive.")
     missing_df = missing_df.sort_values(["ssl", "display_name"], na_position="last")
     for _, row in missing_df.iterrows():
         gpn = row["gpn"]
         name = row.get("display_name", "")
         with st.expander(f"{name} ({gpn})"):
             current = row.get("on_leave", "False")
+            current_active = normalize_bool_str(row.get("active", "True"))
             st.write(f"Current on_leave: **{current}**")
+            st.write(f"Current active: **{current_active}**")
             if st.button("Mark on leave = True", key=f"markleave_{gpn}"):
                 master.loc[master["gpn"] == gpn, "on_leave"] = "True"
                 save_master(master)
                 log_action(user, week, "ON_LEAVE", gpn, "on_leave", current, "True", comment="Missing from export => on leave")
                 st.warning("Marked on leave. Reload page to see QC update.")
                 st.stop()
+            if st.button(
+                "Mark as leaver (active=False)",
+                key=f"markleaver_{gpn}",
+                disabled=current_active == "False",
+            ):
+                master.loc[master["gpn"] == gpn, "active"] = "False"
+                master.loc[master["gpn"] == gpn, "on_leave"] = "False"
+                save_master(master)
+                log_action(
+                    user,
+                    week,
+                    "LEAVER",
+                    gpn,
+                    "active",
+                    current_active,
+                    "False",
+                    comment="Marked as leaver from Missing employees",
+                )
+                st.success("Marked as leaver. Reload page to see QC update.")
+                st.stop()
+            if current_active == "False":
+                st.info("Already inactive.")
 
 # SSL mismatch (employee present in both, but SSL differs)
 st.subheader("🔁 SSL mismatch (PowerBI vs Master)")
